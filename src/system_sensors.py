@@ -17,6 +17,7 @@ import pytz
 import yaml
 import csv
 from pytz import timezone
+import subprocess
 
 try:
     import apt
@@ -69,7 +70,7 @@ class Job(threading.Thread):
 def write_message_to_console(message):
     print(message)
     sys.stdout.flush()
-    
+
 
 def utc_from_timestamp(timestamp: float) -> dt.datetime:
     """Return a UTC time from a timestamp."""
@@ -98,6 +99,11 @@ def on_message(client, userdata, message):
         send_config_message(client)
 
 
+def arch_based():
+    ids = ['arch', 'archarm', 'manjaro']
+    any(id == OS_DATA["ID"] for id in ids)
+
+
 def updateSensors():
     payload_str = (
         '{'
@@ -114,8 +120,11 @@ def updateSensors():
         + f'"host_os": "{get_host_os()}",'
         + f'"host_arch": "{get_host_arch()}"'
     )
-    if "check_available_updates" in settings and settings["check_available_updates"] and not apt_disabled:
-        payload_str = payload_str + f', "updates": {get_updates()}' 
+    if "check_available_updates" in settings and settings["check_available_updates"]:
+        if arch_based:
+            payload_str = payload_str + f', "updates": {get_pacman_updates()}'
+        elif not apt_disabled:
+            payload_str = payload_str + f', "updates": {get_apt_updates()}'
     if "check_wifi_strength" in settings and settings["check_wifi_strength"]:
         payload_str = payload_str + f', "wifi_strength": {get_wifi_strength()}'
     if "external_drives" in settings:
@@ -132,12 +141,18 @@ def updateSensors():
     )
 
 
-def get_updates():
+def get_apt_updates():
     cache = apt.Cache()
     cache.open(None)
     cache.upgrade()
     return str(cache.get_changes().__len__())
 
+
+def get_pacman_updates():
+    pacman = subprocess.Popen(('pacman', '-Qu'), stdout=subprocess.PIPE)
+    packages = subprocess.Popen(['wc', '-l'], stdin=pacman.stdout, stdout=subprocess.PIPE)
+    pacman.stdout.close()
+    return packages.communicate()[0]
 
 # Temperature method depending on system distro
 def get_temp():
@@ -180,7 +195,10 @@ def get_wifi_strength():  # check_output(["/proc/net/wireless", "grep wlan0"])
 
 
 def get_rpi_power_status():
-    return _underVoltage.get()
+    if _underVoltage is None:
+        return str("System not supported.")
+    else:
+        return _underVoltage.get()
 
 def get_host_name():
     return socket.gethostname()
@@ -199,13 +217,13 @@ def get_host_ip():
         sock.close()
 
 def get_host_os():
-    try:     
+    try:
         return OS_DATA["PRETTY_NAME"]
     except:
         return "Unknown"
 
-def get_host_arch():    
-    try:     
+def get_host_arch():
+    try:
         return platform.machine()
     except:
         return "Unknown"
@@ -325,7 +343,7 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
+
     mqttClient.publish(
         topic=f"homeassistant/sensor/{deviceName}/disk_use/config",
         payload=f"{{\"name\":\"{deviceNameDisplay} Disk Use\","
@@ -340,7 +358,7 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
+
     mqttClient.publish(
         topic=f"homeassistant/sensor/{deviceName}/memory_use/config",
         payload=f"{{\"name\":\"{deviceNameDisplay} Memory Use\","
@@ -355,7 +373,7 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
+
     mqttClient.publish(
         topic=f"homeassistant/sensor/{deviceName}/cpu_usage/config",
         payload=f"{{\"name\":\"{deviceNameDisplay} Cpu Usage\","
@@ -370,7 +388,7 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
+
     mqttClient.publish(
         topic=f"homeassistant/sensor/{deviceName}/swap_usage/config",
         payload=f"{{\"name\":\"{deviceNameDisplay} Swap Usage\","
@@ -385,7 +403,7 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
+
     mqttClient.publish(
         topic=f"homeassistant/binary_sensor/{deviceName}/power_status/config",
         payload='{"device_class":"problem",'
@@ -400,8 +418,8 @@ def send_config_message(mqttClient):
         qos=1,
         retain=True,
     )
-    
-   
+
+
     mqttClient.publish(
         topic=f"homeassistant/sensor/{deviceName}/last_boot/config",
         payload='{"device_class":"timestamp",'
@@ -488,7 +506,8 @@ def send_config_message(mqttClient):
     if "check_available_updates" in settings and settings["check_available_updates"]:
         # import apt
         if(apt_disabled):
-            write_message_to_console("import of apt failed!")
+            if not arch_based:
+                write_message_to_console("import of apt failed!")
         else:
             mqttClient.publish(
                 topic=f"homeassistant/sensor/{deviceName}/updates/config",
@@ -503,7 +522,7 @@ def send_config_message(mqttClient):
                 qos=1,
                 retain=True,
             )
-            
+
 
     if "check_wifi_strength" in settings and settings["check_wifi_strength"]:
         mqttClient.publish(
@@ -521,7 +540,7 @@ def send_config_message(mqttClient):
             qos=1,
             retain=True,
         )
-        
+
     if "external_drives" in settings:
         for drive in settings["external_drives"]:
             mqttClient.publish(
@@ -538,7 +557,7 @@ def send_config_message(mqttClient):
                 qos=1,
                 retain=True,
             )
-            
+
 
     mqttClient.publish(f"system-sensors/sensor/{deviceName}/availability", "online", retain=True)
 
@@ -589,6 +608,7 @@ if __name__ == "__main__":
         send_config_message(mqttClient)
     except:
         write_message_to_console("something whent wrong")
+
     _underVoltage = new_under_voltage()
     job = Job(interval=timedelta(seconds=WAIT_TIME_SECONDS), execute=updateSensors)
     job.start()
